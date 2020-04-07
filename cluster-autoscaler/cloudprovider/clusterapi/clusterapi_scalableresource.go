@@ -16,6 +16,12 @@ limitations under the License.
 
 package clusterapi
 
+import (
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
 // scalableResource is a resource that can be scaled up and down by
 // adjusting its replica count field.
 type scalableResource interface {
@@ -46,4 +52,27 @@ type scalableResource interface {
 
 	// MarkMachineForDeletion marks machine for deletion
 	MarkMachineForDeletion(machine *Machine) error
+
+	// UnmarkMachineForDeletion unmarks machine for deletion
+	UnmarkMachineForDeletion(machine *Machine) error
+}
+
+func unmarkMachineForDeletion(controller *machineController, machine *Machine) error {
+	u, err := controller.dynamicclient.Resource(*controller.machineResource).Namespace(machine.Namespace).Get(machine.Name, metav1.GetOptions{})
+
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return fmt.Errorf("unknown machine %s", machine.Name)
+	}
+
+	annotations := u.GetAnnotations()
+	if _, ok := annotations[machineDeleteAnnotationKey]; ok {
+		delete(annotations, machineDeleteAnnotationKey)
+		u.SetAnnotations(annotations)
+		_, updateErr := controller.dynamicclient.Resource(*controller.machineResource).Namespace(u.GetNamespace()).Update(u, metav1.UpdateOptions{})
+		return updateErr
+	}
+	return nil
 }
