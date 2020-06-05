@@ -136,7 +136,15 @@ func newProvider(
 
 // BuildClusterAPI builds CloudProvider implementation for machine api.
 func BuildClusterAPI(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
-	externalConfig, err := clientcmd.BuildConfigFromFlags("", opts.KubeConfigPath)
+
+
+	// Backwards compatibility for falling back to opts.KubeConfigPath
+	kubeconfig := opts.CloudConfig
+	if kubeconfig != "" {
+		kubeconfig = opts.KubeConfigPath
+	}
+
+	externalConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		klog.Fatalf("cannot build config: %v", err)
 	}

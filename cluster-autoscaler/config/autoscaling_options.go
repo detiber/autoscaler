@@ -138,5 +138,6 @@ type AutoscalingOptions struct {
 	// AWSUseStaticInstanceList tells if AWS cloud provider use static instance type list or dynamically fetch from remote APIs.
 	AWSUseStaticInstanceList bool
 	// Path to kube configuration if available
+	// Deprecated
 	KubeConfigPath string
 }
