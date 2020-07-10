@@ -22,7 +22,7 @@ import (
 
 func TestSetSize(t *testing.T) {
 	initialReplicas := 1
-	updatedReplicas := int32(5)
+	updatedReplicas := 5
 
 	test := func(t *testing.T, testConfig *testConfig) {
 		controller, stop := mustCreateTestController(t, testConfig)
@@ -51,23 +51,39 @@ func TestSetSize(t *testing.T) {
 		s, err := sr.controller.managementScaleClient.Scales(testResource.GetNamespace()).
 			Get(gvr.GroupResource(), testResource.GetName())
 
-		if s.Spec.Replicas != updatedReplicas {
+		if s.Spec.Replicas != int32(updatedReplicas) {
 			t.Errorf("expected %v, got: %v", updatedReplicas, s.Spec.Replicas)
 		}
 	}
 
 	t.Run("MachineSet", func(t *testing.T) {
-		test(t, createMachineSetTestConfig(RandomString(6), RandomString(6), initialReplicas, nil))
+		test(t, createMachineSetTestConfig(
+			RandomString(6),
+			RandomString(6),
+			RandomString(6),
+			initialReplicas, map[string]string{
+				nodeGroupMinSizeAnnotationKey: "1",
+				nodeGroupMaxSizeAnnotationKey: "10",
+			},
+		))
 	})
 
 	t.Run("MachineDeployment", func(t *testing.T) {
-		test(t, createMachineDeploymentTestConfig(RandomString(6), RandomString(6), initialReplicas, nil))
+		test(t, createMachineDeploymentTestConfig(
+			RandomString(6),
+			RandomString(6),
+			RandomString(6),
+			initialReplicas, map[string]string{
+				nodeGroupMinSizeAnnotationKey: "1",
+				nodeGroupMaxSizeAnnotationKey: "10",
+			},
+		))
 	})
 }
 
 func TestReplicas(t *testing.T) {
 	initialReplicas := 1
-	updatedReplicas := int32(5)
+	updatedReplicas := 5
 
 	test := func(t *testing.T, testConfig *testConfig) {
 		controller, stop := mustCreateTestController(t, testConfig)
@@ -93,7 +109,7 @@ func TestReplicas(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if i != int32(initialReplicas) {
+		if i != initialReplicas {
 			t.Errorf("expected %v, got: %v", initialReplicas, i)
 		}
 
@@ -104,7 +120,7 @@ func TestReplicas(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		s.Spec.Replicas = updatedReplicas
+		s.Spec.Replicas = int32(updatedReplicas)
 
 		_, err = sr.controller.managementScaleClient.Scales(testResource.GetNamespace()).
 			Update(gvr.GroupResource(), s)
@@ -123,17 +139,17 @@ func TestReplicas(t *testing.T) {
 	}
 
 	t.Run("MachineSet", func(t *testing.T) {
-		test(t, createMachineSetTestConfig(RandomString(6), RandomString(6), initialReplicas, nil))
+		test(t, createMachineSetTestConfig(RandomString(6), RandomString(6), RandomString(6), initialReplicas, nil))
 	})
 
 	t.Run("MachineDeployment", func(t *testing.T) {
-		test(t, createMachineDeploymentTestConfig(RandomString(6), RandomString(6), initialReplicas, nil))
+		test(t, createMachineDeploymentTestConfig(RandomString(6), RandomString(6), RandomString(6), initialReplicas, nil))
 	})
 }
 
 func TestSetSizeAndReplicas(t *testing.T) {
 	initialReplicas := 1
-	updatedReplicas := int32(5)
+	updatedReplicas := 5
 
 	test := func(t *testing.T, testConfig *testConfig) {
 		controller, stop := mustCreateTestController(t, testConfig)
@@ -154,7 +170,7 @@ func TestSetSizeAndReplicas(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if i != int32(initialReplicas) {
+		if i != initialReplicas {
 			t.Errorf("expected %v, got: %v", initialReplicas, i)
 		}
 
@@ -174,10 +190,26 @@ func TestSetSizeAndReplicas(t *testing.T) {
 	}
 
 	t.Run("MachineSet", func(t *testing.T) {
-		test(t, createMachineSetTestConfig(RandomString(6), RandomString(6), initialReplicas, nil))
+		test(t, createMachineSetTestConfig(
+			RandomString(6),
+			RandomString(6),
+			RandomString(6),
+			initialReplicas, map[string]string{
+				nodeGroupMinSizeAnnotationKey: "1",
+				nodeGroupMaxSizeAnnotationKey: "10",
+			},
+		))
 	})
 
 	t.Run("MachineDeployment", func(t *testing.T) {
-		test(t, createMachineDeploymentTestConfig(RandomString(6), RandomString(6), initialReplicas, nil))
+		test(t, createMachineDeploymentTestConfig(
+			RandomString(6),
+			RandomString(6),
+			RandomString(6),
+			initialReplicas, map[string]string{
+				nodeGroupMinSizeAnnotationKey: "1",
+				nodeGroupMaxSizeAnnotationKey: "10",
+			},
+		))
 	})
 }
