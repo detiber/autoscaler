@@ -37,6 +37,8 @@ import (
 	"k8s.io/client-go/scale"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 )
 
 const (
@@ -52,6 +54,9 @@ const (
 	machineDeploymentKind         = "MachineDeployment"
 	machineSetKind                = "MachineSet"
 	machineKind                   = "Machine"
+	autoDiscovererTypeClusterAPI  = "clusterapi"
+	autoDiscovererClusterNameKey  = "clusterName"
+	autoDiscovererNamespaceKey    = "namespace"
 )
 
 // machineController watches for Nodes, Machines, MachineSets and
@@ -71,6 +76,7 @@ type machineController struct {
 	machineResource           schema.GroupVersionResource
 	machineDeploymentResource schema.GroupVersionResource
 	accessLock                sync.Mutex
+	autoDiscoverySpecs        []*clusterAPIAutoDiscoveryConfig
 }
 
 func indexMachineByProviderID(obj interface{}) ([]string, error) {
@@ -79,7 +85,7 @@ func indexMachineByProviderID(obj interface{}) ([]string, error) {
 		return nil, nil
 	}
 
-	providerID, found, err := unstructured.NestedString(u.Object, "spec", "providerID")
+	providerID, found, err := unstructured.NestedString(u.UnstructuredContent(), "spec", "providerID")
 	if err != nil || !found {
 		return nil, nil
 	}
@@ -101,18 +107,18 @@ func indexNodeByProviderID(obj interface{}) ([]string, error) {
 }
 
 func (c *machineController) findMachine(id string) (*unstructured.Unstructured, error) {
-	return findResourceByKey(c.machineInformer.Informer().GetStore(), id)
+	return c.findResourceByKey(c.machineInformer.Informer().GetStore(), id)
 }
 
 func (c *machineController) findMachineSet(id string) (*unstructured.Unstructured, error) {
-	return findResourceByKey(c.machineSetInformer.Informer().GetStore(), id)
+	return c.findResourceByKey(c.machineSetInformer.Informer().GetStore(), id)
 }
 
 func (c *machineController) findMachineDeployment(id string) (*unstructured.Unstructured, error) {
-	return findResourceByKey(c.machineDeploymentInformer.Informer().GetStore(), id)
+	return c.findResourceByKey(c.machineDeploymentInformer.Informer().GetStore(), id)
 }
 
-func findResourceByKey(store cache.Store, key string) (*unstructured.Unstructured, error) {
+func (c *machineController) findResourceByKey(store cache.Store, key string) (*unstructured.Unstructured, error) {
 	item, exists, err := store.GetByKey(key)
 	if err != nil {
 		return nil, err
@@ -125,6 +131,11 @@ func findResourceByKey(store cache.Store, key string) (*unstructured.Unstructure
 	u, ok := item.(*unstructured.Unstructured)
 	if !ok {
 		return nil, fmt.Errorf("internal error; unexpected type: %T", item)
+	}
+
+	// Verify the resource is allowed by the autodiscovery configuration
+	if !c.allowedByAutoDiscoverySpecs(u) {
+		return nil, nil
 	}
 
 	return u.DeepCopy(), nil
@@ -295,9 +306,15 @@ func newMachineController(
 	workloadClient kubeclient.Interface,
 	managementDiscoveryClient discovery.DiscoveryInterface,
 	managementScaleClient scale.ScalesGetter,
+	discoveryOpts cloudprovider.NodeGroupDiscoveryOptions,
 ) (*machineController, error) {
 	workloadInformerFactory := kubeinformers.NewSharedInformerFactory(workloadClient, 0)
 	managementInformerFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(managementClient, 0, metav1.NamespaceAll, nil)
+
+	autoDiscoverySpecs, err := parseAutoDiscovery(discoveryOpts.NodeGroupAutoDiscoverySpecs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse auto discovery configuration: %v", err)
+	}
 
 	CAPIGroup := getCAPIGroup()
 	CAPIVersion, err := getAPIGroupPreferredVersion(managementDiscoveryClient, CAPIGroup)
@@ -346,6 +363,7 @@ func newMachineController(
 	}
 
 	return &machineController{
+		autoDiscoverySpecs:        autoDiscoverySpecs,
 		workloadInformerFactory:   workloadInformerFactory,
 		managementInformerFactory: managementInformerFactory,
 		machineDeploymentInformer: machineDeploymentInformer,
@@ -383,7 +401,7 @@ func (c *machineController) scalableResourceProviderIDs(scalableResource *unstru
 
 	var providerIDs []string
 	for _, machine := range machines {
-		providerID, found, err := unstructured.NestedString(machine.Object, "spec", "providerID")
+		providerID, found, err := unstructured.NestedString(machine.UnstructuredContent(), "spec", "providerID")
 		if err != nil {
 			return nil, err
 		}
@@ -397,7 +415,7 @@ func (c *machineController) scalableResourceProviderIDs(scalableResource *unstru
 
 		klog.Warningf("Machine %q has no providerID", machine.GetName())
 
-		failureMessage, found, err := unstructured.NestedString(machine.Object, "status", "failureMessage")
+		failureMessage, found, err := unstructured.NestedString(machine.UnstructuredContent(), "status", "failureMessage")
 		if err != nil {
 			return nil, err
 		}
@@ -413,7 +431,7 @@ func (c *machineController) scalableResourceProviderIDs(scalableResource *unstru
 			continue
 		}
 
-		_, found, err = unstructured.NestedFieldCopy(machine.Object, "status", "nodeRef")
+		_, found, err = unstructured.NestedFieldCopy(machine.UnstructuredContent(), "status", "nodeRef")
 		if err != nil {
 			return nil, err
 		}
@@ -423,7 +441,7 @@ func (c *machineController) scalableResourceProviderIDs(scalableResource *unstru
 			continue
 		}
 
-		nodeRefKind, found, err := unstructured.NestedString(machine.Object, "status", "nodeRef", "kind")
+		nodeRefKind, found, err := unstructured.NestedString(machine.UnstructuredContent(), "status", "nodeRef", "kind")
 		if err != nil {
 			return nil, err
 		}
@@ -433,7 +451,7 @@ func (c *machineController) scalableResourceProviderIDs(scalableResource *unstru
 			continue
 		}
 
-		nodeRefName, found, err := unstructured.NestedString(machine.Object, "status", "nodeRef", "name")
+		nodeRefName, found, err := unstructured.NestedString(machine.UnstructuredContent(), "status", "nodeRef", "name")
 		if err != nil {
 			return nil, err
 		}
@@ -464,21 +482,13 @@ func (c *machineController) nodeGroups() ([]*nodegroup, error) {
 	nodegroups := make([]*nodegroup, 0, len(scalableResources))
 
 	for _, r := range scalableResources {
-		ng, err := newNodegroupFromScalableResource(c, r)
+		ng, err := newNodeGroupFromScalableResource(c, r)
 		if err != nil {
 			return nil, err
 		}
 
-		// add nodegroup iff it has the capacity to scale
-		if ng.MaxSize()-ng.MinSize() > 0 {
-			replicas, found, err := unstructured.NestedInt64(r.Object, "spec", "replicas")
-			if err != nil {
-				return nil, err
-			}
-
-			if found && replicas > 0 {
-				nodegroups = append(nodegroups, ng)
-			}
+		if ng != nil {
+			nodegroups = append(nodegroups, ng)
 		}
 	}
 	return nodegroups, nil
@@ -493,14 +503,14 @@ func (c *machineController) nodeGroupForNode(node *corev1.Node) (*nodegroup, err
 		return nil, nil
 	}
 
-	nodegroup, err := newNodegroupFromScalableResource(c, scalableResource)
+	nodegroup, err := newNodeGroupFromScalableResource(c, scalableResource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build nodegroup for node %q: %v", node.Name, err)
 	}
 
-	// We don't scale from 0 so nodes must belong to a nodegroup
-	// that has a scale size of at least 1.
-	if nodegroup.MaxSize()-nodegroup.MinSize() < 1 {
+	// the nodegroup will be nil if it doesn't match the autodiscovery configuration
+	// or if it doesn't meet the scaling requirements
+	if nodegroup == nil {
 		return nil, nil
 	}
 
@@ -535,7 +545,7 @@ func (c *machineController) findNodeByProviderID(providerID normalizedProviderID
 func (c *machineController) listMachinesForScalableResource(r *unstructured.Unstructured) ([]*unstructured.Unstructured, error) {
 	switch r.GetKind() {
 	case machineSetKind, machineDeploymentKind:
-		unstructuredSelector, found, err := unstructured.NestedMap(r.Object, "spec", "selector")
+		unstructuredSelector, found, err := unstructured.NestedMap(r.UnstructuredContent(), "spec", "selector")
 		if err != nil {
 			return nil, err
 		}
@@ -554,7 +564,7 @@ func (c *machineController) listMachinesForScalableResource(r *unstructured.Unst
 			return nil, err
 		}
 
-		return listResources(c.machineInformer.Lister().ByNamespace(r.GetNamespace()), selector)
+		return listResources(c.machineInformer.Lister().ByNamespace(r.GetNamespace()), clusterNameFromResource(r), selector)
 	default:
 		return nil, fmt.Errorf("unknown scalable resource kind %s", r.GetKind())
 	}
@@ -577,10 +587,31 @@ func (c *machineController) listScalableResources() ([]*unstructured.Unstructure
 }
 
 func (c *machineController) listResources(lister cache.GenericLister) ([]*unstructured.Unstructured, error) {
-	return listResources(lister.ByNamespace(metav1.NamespaceAll), labels.Everything())
+	if len(c.autoDiscoverySpecs) == 0 {
+		return listResources(lister.ByNamespace(metav1.NamespaceAll), "", labels.Everything())
+	}
+
+	var results []*unstructured.Unstructured
+	tracker := map[string]bool{}
+	for _, spec := range c.autoDiscoverySpecs {
+		resources, err := listResources(lister.ByNamespace(spec.namespace), spec.clusterName, spec.labelSelector)
+		if err != nil {
+			return nil, err
+		}
+		for i := range resources {
+			r := resources[i]
+			key := fmt.Sprintf("%s-%s-%s", r.GetKind(), r.GetNamespace(), r.GetName())
+			if _, ok := tracker[key]; !ok {
+				results = append(results, r)
+				tracker[key] = true
+			}
+		}
+	}
+
+	return results, nil
 }
 
-func listResources(lister cache.GenericNamespaceLister, selector labels.Selector) ([]*unstructured.Unstructured, error) {
+func listResources(lister cache.GenericNamespaceLister, clusterName string, selector labels.Selector) ([]*unstructured.Unstructured, error) {
 	objs, err := lister.List(selector)
 	if err != nil {
 		return nil, err
@@ -593,6 +624,11 @@ func listResources(lister cache.GenericNamespaceLister, selector labels.Selector
 			return nil, fmt.Errorf("expected unstructured resource from lister, not %T", x)
 		}
 
+		// if clusterName is not empty and the clusterName does not match the resource, do not return it as part of the results
+		if clusterName != "" && clusterNameFromResource(u) != clusterName {
+			continue
+		}
+
 		// if we are listing MachineSets, do not return MachineSets that are owned by a MachineDeployment
 		if u.GetKind() == machineSetKind && machineSetHasMachineDeploymentOwnerRef(u) {
 			continue
@@ -602,4 +638,19 @@ func listResources(lister cache.GenericNamespaceLister, selector labels.Selector
 	}
 
 	return results, nil
+}
+
+func (c *machineController) allowedByAutoDiscoverySpecs(r *unstructured.Unstructured) bool {
+	// If no autodiscovery configuration fall back to previous behavior of allowing all
+	if len(c.autoDiscoverySpecs) == 0 {
+		return true
+	}
+
+	for _, spec := range c.autoDiscoverySpecs {
+		if allowedByAutoDiscoverySpec(spec, r) {
+			return true
+		}
+	}
+
+	return false
 }
