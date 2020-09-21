@@ -17,6 +17,7 @@ limitations under the License.
 package packet
 
 import (
+	"context"
 	"io"
 	"os"
 	"sync"
@@ -154,7 +155,7 @@ func BuildPacket(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 		defer config.Close()
 	}
 
-	manager, err := createPacketManager(config, do, opts)
+	manager, err := createPacketManager(config, opts)
 	if err != nil {
 		klog.Fatalf("Failed to create packet manager: %v", err)
 	}
@@ -184,10 +185,9 @@ func BuildPacket(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 			minSize:             spec.MinSize,
 			maxSize:             spec.MaxSize,
 			targetSize:          new(int),
-			waitTimeStep:        waitForStatusTimeStep,
 			deleteBatchingDelay: deleteNodesBatchingDelay,
 		}
-		*ng.targetSize, err = ng.packetManager.nodeGroupSize(ng.id)
+		*ng.targetSize, err = ng.packetManager.nodeGroupSize(context.TODO(), ng.id)
 
 		if err != nil {
 			klog.Fatalf("Could not set current nodes in node group: %v", err)

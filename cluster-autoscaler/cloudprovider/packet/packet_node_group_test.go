@@ -17,6 +17,7 @@ limitations under the License.
 package packet
 
 import (
+	"context"
 	"os"
 	"sync"
 	"testing"
@@ -31,10 +32,11 @@ import (
 func TestIncreaseDecreaseSize(t *testing.T) {
 	var m *packetManagerRest
 
+	ctx := context.Background()
+
 	server := NewHttpServerMock()
 	defer server.Close()
 
-	assert.Equal(t, true, true)
 	if len(os.Getenv("PACKET_AUTH_TOKEN")) > 0 {
 		// If auth token set in env, hit the actual Packet API
 		m = newTestPacketManagerRest("https://api.packet.net")
@@ -45,6 +47,7 @@ func TestIncreaseDecreaseSize(t *testing.T) {
 		server.On("handle", "/projects/"+m.projectID+"/devices").Return(listPacketDevicesResponseAfterCreate).Times(2)
 		server.On("handle", "/projects/"+m.projectID+"/devices").Return(listPacketDevicesResponse)
 	}
+
 	clusterUpdateLock := sync.Mutex{}
 	ng := &packetNodeGroup{
 		packetManager:       m,
@@ -53,7 +56,6 @@ func TestIncreaseDecreaseSize(t *testing.T) {
 		minSize:             1,
 		maxSize:             10,
 		targetSize:          new(int),
-		waitTimeStep:        30 * time.Second,
 		deleteBatchingDelay: 2 * time.Second,
 	}
 
@@ -73,7 +75,8 @@ func TestIncreaseDecreaseSize(t *testing.T) {
 		// If testing with actual API give it some time until the nodes bootstrap
 		time.Sleep(420 * time.Second)
 	}
-	n2, err := ng.packetManager.getNodeNames(ng.id)
+
+	n2, err := ng.packetManager.getNodeNames(ctx, ng.id)
 	assert.NoError(t, err)
 	// Assert that the nodepool size is now 3
 	assert.Equal(t, int(3), len(n2))
@@ -86,6 +89,7 @@ func TestIncreaseDecreaseSize(t *testing.T) {
 			nodes = append(nodes, BuildTestNode(node, 1000, 1000))
 		}
 	}
+
 	err = ng.DeleteNodes(nodes)
 	assert.NoError(t, err)
 

@@ -17,6 +17,7 @@ limitations under the License.
 package packet
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -48,14 +49,18 @@ func newTestPacketManagerRest(url string) *packetManagerRest {
 		reservation:       "prefer",
 		hostnamePattern:   "k8s-{{.ClusterName}}-{{.NodeGroup}}-{{.RandString8}}",
 	}
+
 	return manager
 }
 
 func TestListPacketDevices(t *testing.T) {
 	var m *packetManagerRest
 
+	ctx := context.Background()
+
 	server := NewHttpServerMock()
 	defer server.Close()
+
 	if len(os.Getenv("PACKET_AUTH_TOKEN")) > 0 {
 		// If auth token set in env, hit the actual Packet API
 		m = newTestPacketManagerRest("https://api.packet.net")
@@ -65,10 +70,10 @@ func TestListPacketDevices(t *testing.T) {
 		server.On("handle", "/projects/"+m.projectID+"/devices").Return(listPacketDevicesResponse).Times(2)
 	}
 
-	_, err := m.listPacketDevices()
+	_, err := m.listPacketDevices(ctx)
 	assert.NoError(t, err)
 
-	c, err := m.nodeGroupSize("pool1")
+	c, err := m.nodeGroupSize(ctx, "pool1")
 	assert.NoError(t, err)
 	assert.Equal(t, int(1), c) // One device in nodepool
 

@@ -17,12 +17,12 @@ limitations under the License.
 package packet
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 )
@@ -43,18 +43,18 @@ type NodeRef struct {
 
 // packetManager is an interface for the basic interactions with the cluster.
 type packetManager interface {
-	nodeGroupSize(nodegroup string) (int, error)
-	createNodes(nodegroup string, nodes int) error
-	getNodes(nodegroup string) ([]string, error)
-	getNodeNames(nodegroup string) ([]string, error)
-	deleteNodes(nodegroup string, nodes []NodeRef, updatedNodeCount int) error
+	nodeGroupSize(ctx context.Context, nodegroup string) (int, error)
+	createNodes(ctx context.Context, nodegroup string, nodes int) error
+	getNodes(ctx context.Context, nodegroup string) ([]string, error)
+	getNodeNames(ctx context.Context, nodegroup string) ([]string, error)
+	deleteNodes(ctx context.Context, nodegroup string, nodes []NodeRef, updatedNodeCount int) error
 	templateNodeInfo(nodegroup string) (*schedulerframework.NodeInfo, error)
 }
 
 // createPacketManager creates the desired implementation of packetManager.
 // Currently reads the environment variable PACKET_MANAGER to find which to create,
 // and falls back to a default if the variable is not found.
-func createPacketManager(configReader io.Reader, discoverOpts cloudprovider.NodeGroupDiscoveryOptions, opts config.AutoscalingOptions) (packetManager, error) {
+func createPacketManager(configReader io.Reader, opts config.AutoscalingOptions) (packetManager, error) {
 	// For now get manager from env var, can consider adding flag later
 	manager, ok := os.LookupEnv("PACKET_MANAGER")
 	if !ok {
@@ -62,7 +62,7 @@ func createPacketManager(configReader io.Reader, discoverOpts cloudprovider.Node
 	}
 
 	if manager == "rest" {
-		return createPacketManagerRest(configReader, discoverOpts, opts)
+		return createPacketManagerRest(configReader, opts)
 	}
 
 	return nil, fmt.Errorf("packet manager does not exist: %s, :%w", manager, ErrUnkonwnPacketManager)
