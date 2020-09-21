@@ -55,14 +55,18 @@ type packetNodeGroup struct {
 }
 
 const (
-	waitForStatusTimeStep       = 30 * time.Second
-	waitForUpdateStatusTimeout  = 2 * time.Minute
-	waitForCompleteStatusTimout = 10 * time.Minute
-	scaleToZeroSupported        = false
+	waitForStatusTimeStep = 30 * time.Second
+	scaleToZeroSupported  = false
 
 	// Time that the goroutine that first acquires clusterUpdateMutex
 	// in deleteNodes should wait for other synchronous calls to deleteNodes.
 	deleteNodesBatchingDelay = 2 * time.Second
+)
+
+var (
+	ErrDeltaMustBeNegative = fmt.Errorf("size increase must be negative")
+	ErrDeltaMustBePostive  = fmt.Errorf("size increase must be positive")
+	ErrDeltaTooLarge       = fmt.Errorf("size change too large")
 )
 
 // IncreaseSize increases the number of nodes by replacing the cluster's node_count.
@@ -74,15 +78,15 @@ func (ng *packetNodeGroup) IncreaseSize(delta int) error {
 	defer ng.clusterUpdateMutex.Unlock()
 
 	if delta <= 0 {
-		return fmt.Errorf("size increase must be positive")
+		return ErrDeltaMustBePostive
 	}
 
 	size, err := ng.packetManager.nodeGroupSize(ng.id)
 	if err != nil {
-		return fmt.Errorf("could not check current nodegroup size: %v", err)
+		return fmt.Errorf("could not check current nodegroup size: %w", err)
 	}
 	if size+delta > ng.MaxSize() {
-		return fmt.Errorf("size increase too large, desired:%d max:%d", size+delta, ng.MaxSize())
+		return fmt.Errorf("desired: %d, max: %d, error: %w", size+delta, ng.MaxSize(), ErrDeltaTooLarge)
 	}
 
 	klog.V(0).Infof("Increasing size by %d, %d->%d", delta, *ng.targetSize, *ng.targetSize+delta)
@@ -90,7 +94,7 @@ func (ng *packetNodeGroup) IncreaseSize(delta int) error {
 
 	err = ng.packetManager.createNodes(ng.id, delta)
 	if err != nil {
-		return fmt.Errorf("could not increase cluster size: %v", err)
+		return fmt.Errorf("could not increase cluster size: %w", err)
 	}
 
 	return nil
@@ -114,8 +118,9 @@ func (ng *packetNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	// cachedSize keeps a local copy for this goroutine, so that ng.deleteNodesCachedSize is used
 	// only within the ng.nodesToDeleteMutex.
 	var cachedSize int
-	var err error
+
 	if time.Since(ng.deleteNodesCachedSizeAt) > time.Second*10 {
+		var err error
 		cachedSize, err = ng.packetManager.nodeGroupSize(ng.id)
 		if err != nil {
 			ng.nodesToDeleteMutex.Unlock()
@@ -155,6 +160,7 @@ func (ng *packetNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		ng.nodesToDeleteMutex.Unlock()
 		return nil
 	}
+
 	klog.V(1).Infof("Unlocking nodesToDeleteMutex")
 	ng.nodesToDeleteMutex.Unlock()
 
@@ -170,31 +176,36 @@ func (ng *packetNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	ng.nodesToDeleteMutex.Lock()
 	nodes = make([]*apiv1.Node, len(ng.nodesToDelete))
 	copy(nodes, ng.nodesToDelete)
+
 	ng.nodesToDelete = nil
+
 	klog.V(1).Infof("UnLocking nodesToDeleteMutex")
 	ng.nodesToDeleteMutex.Unlock()
 
-	var nodeNames []string
+	nodeNames := make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		nodeNames = append(nodeNames, node.Name)
 	}
+
 	klog.V(0).Infof("Deleting nodes: %v", nodeNames)
 
 	// Double check that the total number of batched nodes for deletion will not take the node group below its minimum size
 	if cachedSize-len(nodes) < ng.MinSize() {
-		return fmt.Errorf("size decrease too large, desired:%d min:%d", cachedSize-len(nodes), ng.MinSize())
+		return fmt.Errorf("desired: %d, min: %d, error: %w", cachedSize-len(nodes), ng.MinSize(), ErrDeltaTooLarge)
 	}
 
-	var nodeRefs []NodeRef
-	for _, node := range nodes {
+	nodeRefs := make([]NodeRef, 0, len(nodes))
 
+	for _, node := range nodes {
 		// Find node IPs, can be multiple (IPv4 and IPv6)
-		var IPs []string
+		IPs := make([]string, 0, len(node.Status.Addresses))
+
 		for _, addr := range node.Status.Addresses {
 			if addr.Type == apiv1.NodeInternalIP {
 				IPs = append(IPs, addr.Address)
 			}
 		}
+
 		nodeRefs = append(nodeRefs, NodeRef{
 			Name:       node.Name,
 			MachineID:  node.Status.NodeInfo.MachineID,
@@ -203,9 +214,8 @@ func (ng *packetNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		})
 	}
 
-	err = ng.packetManager.deleteNodes(ng.id, nodeRefs, cachedSize-len(nodes))
-	if err != nil {
-		return fmt.Errorf("manager error deleting nodes: %v", err)
+	if err := ng.packetManager.deleteNodes(ng.id, nodeRefs, cachedSize-len(nodes)); err != nil {
+		return fmt.Errorf("manager error deleting nodes: %w", err)
 	}
 
 	// Check the new node group size and store that as the new target
@@ -213,7 +223,8 @@ func (ng *packetNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	if err != nil {
 		// Set to the expected size as a fallback
 		*ng.targetSize = cachedSize - len(nodes)
-		return fmt.Errorf("could not check new cluster size after scale down: %v", err)
+
+		return fmt.Errorf("could not check new cluster size after scale down: %w", err)
 	}
 	*ng.targetSize = newSize
 
@@ -223,8 +234,9 @@ func (ng *packetNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 // DecreaseTargetSize decreases the cluster node_count in packet.
 func (ng *packetNodeGroup) DecreaseTargetSize(delta int) error {
 	if delta >= 0 {
-		return fmt.Errorf("size decrease must be negative")
+		return ErrDeltaMustBeNegative
 	}
+
 	klog.V(0).Infof("Decreasing target size by %d, %d->%d", delta, *ng.targetSize, *ng.targetSize+delta)
 	*ng.targetSize += delta
 	return fmt.Errorf("could not decrease target size") /*ng.packetManager.updateNodeCount(ng.id, *ng.targetSize)*/
@@ -244,9 +256,10 @@ func (ng *packetNodeGroup) Debug() string {
 func (ng *packetNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 	nodes, err := ng.packetManager.getNodes(ng.id)
 	if err != nil {
-		return nil, fmt.Errorf("could not get nodes: %v", err)
+		return nil, fmt.Errorf("could not get nodes: %w", err)
 	}
-	var instances []cloudprovider.Instance
+
+	instances := make([]cloudprovider.Instance, 0, len(nodes))
 	for _, node := range nodes {
 		instances = append(instances, cloudprovider.Instance{Id: node})
 	}

@@ -31,32 +31,31 @@ import (
 )
 
 const (
-	// ProviderName is the cloud provider name for Packet
+	// ProviderName is the cloud provider name for Packet.
 	ProviderName = "packet"
 	// GPULabel is the label added to nodes with GPU resource.
 	GPULabel = "cloud.google.com/gke-accelerator"
 )
 
-var (
-	availableGPUTypes = map[string]struct{}{
-		"nvidia-tesla-v100": {},
-	}
-)
+var availableGPUTypes = map[string]struct{}{
+	"nvidia-tesla-v100": {},
+}
 
 // packetCloudProvider implements CloudProvider interface from cluster-autoscaler/cloudprovider module.
 type packetCloudProvider struct {
 	packetManager   *packetManager
 	resourceLimiter *cloudprovider.ResourceLimiter
-	nodeGroups      []packetNodeGroup
+	nodeGroups      []*packetNodeGroup
 }
 
-func buildPacketCloudProvider(packetManager packetManager, resourceLimiter *cloudprovider.ResourceLimiter) (cloudprovider.CloudProvider, error) {
+func buildPacketCloudProvider(packetManager packetManager, resourceLimiter *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
 	pcp := &packetCloudProvider{
 		packetManager:   &packetManager,
 		resourceLimiter: resourceLimiter,
-		nodeGroups:      []packetNodeGroup{},
+		nodeGroups:      []*packetNodeGroup{},
 	}
-	return pcp, nil
+
+	return pcp
 }
 
 // Name returns the name of the cloud provider.
@@ -69,22 +68,23 @@ func (pcp *packetCloudProvider) GPULabel() string {
 	return GPULabel
 }
 
-// GetAvailableGPUTypes return all available GPU types cloud provider supports
+// GetAvailableGPUTypes return all available GPU types cloud provider supports.
 func (pcp *packetCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
 	return availableGPUTypes
 }
 
 // NodeGroups returns all node groups managed by this cloud provider.
 func (pcp *packetCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
-	groups := make([]cloudprovider.NodeGroup, len(pcp.nodeGroups))
-	for i, group := range pcp.nodeGroups {
-		groups[i] = &group
+	groups := make([]cloudprovider.NodeGroup, 0, len(pcp.nodeGroups))
+	for i := range pcp.nodeGroups {
+		groups = append(groups, pcp.nodeGroups[i])
 	}
+
 	return groups
 }
 
 // AddNodeGroup appends a node group to the list of node groups managed by this cloud provider.
-func (pcp *packetCloudProvider) AddNodeGroup(group packetNodeGroup) {
+func (pcp *packetCloudProvider) AddNodeGroup(group *packetNodeGroup) {
 	pcp.nodeGroups = append(pcp.nodeGroups, group)
 }
 
@@ -95,7 +95,8 @@ func (pcp *packetCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovide
 	if _, found := node.ObjectMeta.Labels["node-role.kubernetes.io/master"]; found {
 		return nil, nil
 	}
-	return &(pcp.nodeGroups[0]), nil
+
+	return pcp.nodeGroups[0], nil
 }
 
 // Pricing is not implemented.
@@ -114,7 +115,7 @@ func (pcp *packetCloudProvider) NewNodeGroup(machineType string, labels map[stri
 	return nil, cloudprovider.ErrNotImplemented
 }
 
-// GetResourceLimiter returns resource constraints for the cloud provider
+// GetResourceLimiter returns resource constraints for the cloud provider.
 func (pcp *packetCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLimiter, error) {
 	return pcp.resourceLimiter, nil
 }
@@ -126,6 +127,7 @@ func (pcp *packetCloudProvider) Refresh() error {
 	for _, nodegroup := range pcp.nodeGroups {
 		klog.V(3).Info(nodegroup.Debug())
 	}
+
 	return nil
 }
 
@@ -143,10 +145,12 @@ func BuildPacket(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 
 	if opts.CloudConfig != "" {
 		var err error
+
 		config, err = os.Open(opts.CloudConfig)
 		if err != nil {
 			klog.Fatalf("Couldn't open cloud provider configuration %s: %#v", opts.CloudConfig, err)
 		}
+
 		defer config.Close()
 	}
 
@@ -155,10 +159,7 @@ func BuildPacket(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 		klog.Fatalf("Failed to create packet manager: %v", err)
 	}
 
-	provider, err := buildPacketCloudProvider(manager, rl)
-	if err != nil {
-		klog.Fatalf("Failed to create packet cloud provider: %v", err)
-	}
+	provider := buildPacketCloudProvider(manager, rl)
 
 	if len(do.NodeGroupSpecs) == 0 {
 		klog.Fatalf("Must specify at least one node group with --nodes=<min>:<max>:<name>,...")
@@ -176,7 +177,7 @@ func BuildPacket(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 			klog.Fatalf("Could not parse node group spec %s: %v", nodegroupSpec, err)
 		}
 
-		ng := packetNodeGroup{
+		ng := &packetNodeGroup{
 			packetManager:       manager,
 			id:                  spec.Name,
 			clusterUpdateMutex:  &clusterUpdateLock,
@@ -187,9 +188,11 @@ func BuildPacket(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 			deleteBatchingDelay: deleteNodesBatchingDelay,
 		}
 		*ng.targetSize, err = ng.packetManager.nodeGroupSize(ng.id)
+
 		if err != nil {
 			klog.Fatalf("Could not set current nodes in node group: %v", err)
 		}
+
 		provider.(*packetCloudProvider).AddNodeGroup(ng)
 	}
 

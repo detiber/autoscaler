@@ -22,24 +22,25 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "k8s.io/api/core/v1"
-	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	apiv1 "k8s.io/api/core/v1"
+	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 )
 
 func TestIncreaseDecreaseSize(t *testing.T) {
 	var m *packetManagerRest
+
 	server := NewHttpServerMock()
 	defer server.Close()
+
 	assert.Equal(t, true, true)
 	if len(os.Getenv("PACKET_AUTH_TOKEN")) > 0 {
 		// If auth token set in env, hit the actual Packet API
-		m = newTestPacketManagerRest(t, "https://api.packet.net")
+		m = newTestPacketManagerRest("https://api.packet.net")
 	} else {
 		// Set up a mock Packet API
-		m = newTestPacketManagerRest(t, server.URL)
+		m = newTestPacketManagerRest(server.URL)
 		server.On("handle", "/projects/"+m.projectID+"/devices").Return(listPacketDevicesResponse).Times(4)
 		server.On("handle", "/projects/"+m.projectID+"/devices").Return(listPacketDevicesResponseAfterCreate).Times(2)
 		server.On("handle", "/projects/"+m.projectID+"/devices").Return(listPacketDevicesResponse)
@@ -79,6 +80,7 @@ func TestIncreaseDecreaseSize(t *testing.T) {
 
 	// Let's try to delete the new nodes
 	nodes := []*apiv1.Node{}
+
 	for _, node := range n2 {
 		if node != "k8s-worker-1" {
 			nodes = append(nodes, BuildTestNode(node, 1000, 1000))

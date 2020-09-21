@@ -17,6 +17,7 @@ limitations under the License.
 package packet
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,8 @@ import (
 const (
 	defaultManager = "rest"
 )
+
+var ErrUnkonwnPacketManager = errors.New("unknown packet manager")
 
 // NodeRef stores the name, machineID and providerID of a node.
 type NodeRef struct {
@@ -58,10 +61,9 @@ func createPacketManager(configReader io.Reader, discoverOpts cloudprovider.Node
 		manager = defaultManager
 	}
 
-	switch manager {
-	case "rest":
+	if manager == "rest" {
 		return createPacketManagerRest(configReader, discoverOpts, opts)
 	}
 
-	return nil, fmt.Errorf("packet manager does not exist: %s", manager)
+	return nil, fmt.Errorf("packet manager does not exist: %s, :%w", manager, ErrUnkonwnPacketManager)
 }
